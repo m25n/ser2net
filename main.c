@@ -23,6 +23,8 @@ void term(int signum)
     done = 1;
 }
 
+int copy(int src_fd, int dest_fd, char* buf, size_t buf_len);
+
 int main(int argc, char *argv[])
 {
     struct sigaction action;
@@ -31,18 +33,14 @@ int main(int argc, char *argv[])
     sigaction(SIGTERM, &action, NULL);
     sigaction(SIGINT, &action, NULL);
 
-    int sock_fd = 0, serial_fd = 0, n = 0, len = 0;
-    char rcv_buf[BUFSIZE];
-    char snd_buf[BUFSIZE];
+    int sock_fd = 0, serial_fd = 0;
+    char buf[BUFSIZE];
     struct sockaddr_in serv_addr; 
 
     if(argc != 4) {
         printf("\n Usage: %s <serial> <server> <port> \n", argv[0]);
         return 1;
     } 
-
-    memset(rcv_buf, 0, sizeof(rcv_buf));
-    memset(snd_buf, 0, sizeof(snd_buf));
 
     printf("Connecting to %s:%s...", argv[2], argv[3]);
     if((sock_fd = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
@@ -77,33 +75,33 @@ int main(int argc, char *argv[])
     usleep(1000000);
     printf("done.\n");
 
+
+
+    fd_set readset;
+    int maxfd = sock_fd;
+    if (serial_fd > sock_fd) maxfd = serial_fd;
+
     while(done == 0) {
-        n = read(serial_fd, snd_buf, sizeof(snd_buf));
-        if(n == - 1 && errno != EAGAIN) {
-            break;
-        }
+        FD_ZERO(&readset);
 
-        if(n > 0) {
-            n = write(sock_fd, snd_buf, n);
-            if(n == -1) {
+        // Add all of the interesting fds to readset
+        FD_SET(sock_fd, &readset);
+        FD_SET(serial_fd, &readset);
+
+        // Wait until one or more fds are ready to read
+        select(maxfd+1, &readset, NULL, NULL, NULL);
+
+        if(FD_ISSET(serial_fd, &readset)) {
+            if(copy(serial_fd, sock_fd, buf, BUFSIZE) == -1) {
                 break;
             }
         }
 
-        n = read(sock_fd, rcv_buf, sizeof(rcv_buf));
-        if(n == - 1 && errno != EAGAIN) {
-            break;
-        }
-
-        if(n > 0) {
-            len = n;
-            n = write(serial_fd, rcv_buf, n);
-            if(n == -1 || n != len) {
+        if(FD_ISSET(sock_fd, &readset)) {
+            if(copy(sock_fd, serial_fd, buf, BUFSIZE) == -1) {
                 break;
             }
         }
-
-        usleep(1000);
     }
 
     printf("exiting...");
@@ -113,4 +111,17 @@ int main(int argc, char *argv[])
     printf("done.\n");
 
     return 0;
+}
+
+int copy(int src_fd, int dest_fd, char* buf, size_t buf_len)
+{
+    int n = read(src_fd, buf, buf_len);
+
+    if(n == -1 && errno == EAGAIN) {
+        n = 0;
+    } else if(n > 0) {
+        n = write(dest_fd, buf, n);
+    }
+
+    return n;
 }
