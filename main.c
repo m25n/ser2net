@@ -120,6 +120,7 @@ int main(int argc, char *argv[])
     serial_flush(serial_fd);
     serial_close(serial_fd);
     close(sock_fd);
+    free(events);
     printf("done.\n");
 
     return 0;
