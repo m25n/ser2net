@@ -11,6 +11,7 @@
 #include <arpa/inet.h> 
 #include <fcntl.h>
 #include <signal.h>
+#include <sys/epoll.h>
 
 #include "serial.h"
 
@@ -19,9 +20,7 @@
 int done = 0;
 
 void term(int signum)
-{
-    done = 1;
-}
+{ done = 1; }
 
 int copy(int src_fd, int dest_fd, char* buf, size_t buf_len);
 
@@ -76,30 +75,43 @@ int main(int argc, char *argv[])
     printf("done.\n");
 
 
+    int epoll_fd = epoll_create(2);
 
-    fd_set readset;
-    int maxfd = sock_fd;
-    if (serial_fd > sock_fd) maxfd = serial_fd;
+    static struct epoll_event sock_ev;
+    sock_ev.events = EPOLLIN | EPOLLPRI;
+    sock_ev.data.fd = sock_fd;
+    epoll_ctl(epoll_fd, EPOLL_CTL_ADD, sock_fd, &sock_ev);
 
+    static struct epoll_event serial_ev;
+    serial_ev.events = EPOLLIN | EPOLLPRI;
+    serial_ev.data.fd = serial_fd;
+    epoll_ctl(epoll_fd, EPOLL_CTL_ADD, serial_fd, &serial_ev);
+
+    struct epoll_event *events = malloc(sizeof(struct epoll_event) * 2);
+
+    int n_events;
     while(done == 0) {
-        FD_ZERO(&readset);
+        n_events = epoll_wait(epoll_fd, events, 2, -1); 
 
-        // Add all of the interesting fds to readset
-        FD_SET(sock_fd, &readset);
-        FD_SET(serial_fd, &readset);
-
-        // Wait until one or more fds are ready to read
-        select(maxfd+1, &readset, NULL, NULL, NULL);
-
-        if(FD_ISSET(serial_fd, &readset)) {
-            if(copy(serial_fd, sock_fd, buf, BUFSIZE) == -1) {
+        for(int i=0; i < n_events; ++i) {
+            if(
+                (events[i].events & EPOLLERR) ||
+                (events[i].events & EPOLLHUP) ||
+                (!(events[i].events & EPOLLIN))
+            ) {
+                printf("epoll error\n");
+                done = 1;
                 break;
-            }
-        }
-
-        if(FD_ISSET(sock_fd, &readset)) {
-            if(copy(sock_fd, serial_fd, buf, BUFSIZE) == -1) {
-                break;
+            } else if(events[i].data.fd == serial_fd) {
+                if(copy(serial_fd, sock_fd, buf, BUFSIZE) == -1) {
+                    done = 1;
+                    break;
+                }
+            } else if(events[i].data.fd == sock_fd) {
+                if(copy(sock_fd, serial_fd, buf, BUFSIZE) == -1) {
+                    done = 1;
+                    break;
+                }
             }
         }
     }
